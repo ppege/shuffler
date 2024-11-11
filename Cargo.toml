@@ -5,5 +5,5 @@ edition = "2021"
 
 [dependencies]
 env_logger = "0.11.5"
-rspotify = "0.13.3"
+rspotify = { version = "0.13.3", features = ["env-file"] }
 tokio = { version = "1.41.1", features = ["full"] }
