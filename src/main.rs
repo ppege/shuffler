@@ -98,7 +98,7 @@ async fn get_authorized_session() -> Result<AuthCodeSpotify> {
     ))
     .context("Your Spotify application seems to be missing permissions.")?;
     let mut spotify = AuthCodeSpotify::new(creds, oauth);
-    // spotify.config.token_cached = true;
+    spotify.config.token_cached = true;
 
     // Obtaining the access token
     let url = spotify
