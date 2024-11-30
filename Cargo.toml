@@ -2,6 +2,10 @@
 name = "shuffler"
 version = "0.1.0"
 edition = "2021"
+license-file = "LICENSE"
+description = "Rust-based true spotify playlist shuffling"
+repository = "https://github.com/ppege/shuffler"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0.93"
