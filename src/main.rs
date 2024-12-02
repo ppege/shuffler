@@ -3,11 +3,17 @@ use console::Term;
 use dialoguer::{FuzzySelect, Input};
 use futures::stream::TryStreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
+use preferences::{AppInfo, Preferences, PreferencesMap};
 use rand::distributions::{Alphanumeric, DistString};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rspotify::{model::PlaylistId, prelude::*, scopes, AuthCodeSpotify, Credentials, OAuth};
 use std::time::Duration;
+
+const APP_INFO: AppInfo = AppInfo {
+    name: "shuffler",
+    author: "ppege",
+};
 
 #[macro_export]
 macro_rules! spinner {
@@ -31,7 +37,7 @@ async fn main() {
     env_logger::init();
     let term = Term::stdout();
 
-    let spotify = get_authorized_session().await.unwrap();
+    let spotify = get_authorized_session(&term).await.unwrap();
 
     term.write_line("Specify a limit below 50 for the user playlist fetch.\nIf you don't see the playlist you wish to shuffle after this, abort with ^C and try a lower limit.").unwrap();
 
@@ -60,7 +66,7 @@ async fn main() {
     let shuffle_name = Input::new()
         .with_prompt("New playlist name?")
         .default(format!(
-            "shuffler: {}",
+            "shuffler::{}",
             Alphanumeric.sample_string(&mut thread_rng(), 8)
         ))
         .interact_text()
@@ -74,7 +80,7 @@ async fn main() {
                     &shuffle_name,
                     Some(false),
                     Some(false),
-                    Some("Created with shuffler https://github.com/ppege/shuffler"),
+                    Some(&format!("True shuffle of {}, created with shuffler https://github.com/ppege/shuffler", &selected_playlist_name)),
                 )
                 .await
                 .unwrap()
@@ -100,8 +106,31 @@ async fn main() {
         .context("Couldn't write success message to terminal. Program succeeded anyway... process failed successfully?").unwrap();
 }
 
-async fn get_authorized_session() -> Result<AuthCodeSpotify> {
-    let creds = Credentials::from_env().context("Failed to get Spotify API credentials from environment variables. Make sure the environment variables RSPOTIFY_CLIENT_ID, RSPOTIFY_CLIENT_SECRET, and RSPOTIFY_REDIRECT_URL are set in accordance to your Spotify application.")?;
+async fn get_authorized_session(term: &Term) -> Result<AuthCodeSpotify> {
+    let creds = match PreferencesMap::<String>::load(&APP_INFO, "preferences/credentials") {
+        Ok(config) => Credentials::new(&config["id"], &config["secret"]),
+        Err(_) => {
+            let mut config = PreferencesMap::new();
+            term.write_line("You're running shuffler for the first time! In order to use this tool, you have to create a Spotify app, which you can do at https://developer.spotify.com/dashboard. Once you've done this, you have to provide the client ID and secret here.").unwrap();
+            config.insert(
+                "id".into(),
+                Input::<String>::new()
+                    .with_prompt("Enter the client ID")
+                    .interact_text()
+                    .unwrap(),
+            );
+            config.insert(
+                "secret".into(),
+                Input::<String>::new()
+                    .with_prompt("Enter the client secret")
+                    .interact_text()
+                    .unwrap(),
+            );
+            let _ = config.save(&APP_INFO, "preferences/credentials");
+            Credentials::new(&config["id"], &config["secret"])
+        }
+    };
+
     let oauth = OAuth::from_env(scopes!(
         "playlist-read-private",
         "playlist-read-collaborative",
