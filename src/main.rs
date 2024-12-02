@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use console::Term;
-use dialoguer::FuzzySelect;
+use dialoguer::{FuzzySelect, Input};
 use futures::stream::TryStreamExt;
-use futures_util::pin_mut;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::distributions::{Alphanumeric, DistString};
 use rand::seq::SliceRandom;
@@ -12,19 +11,19 @@ use std::time::Duration;
 
 #[macro_export]
 macro_rules! spinner {
-    ($fn:expr, $message:expr, $finish_message:expr) => {{
+    ($fn:expr, $message:expr, $finish_message:expr) => {
         async {
-            let spinner_style = ProgressStyle::with_template("{wide_msg} {spinner}").unwrap();
+            let spinner_style = ProgressStyle::with_template("{msg} {spinner}").unwrap();
             let tick_duration = Duration::from_millis(100);
             let spinner = ProgressBar::new_spinner()
                 .with_style(spinner_style.clone())
-                .with_message(format!("[ ] {}", $message));
+                .with_message($message);
             spinner.enable_steady_tick(tick_duration);
             let result = $fn.await;
             spinner.finish_with_message(format!("[\u{2713}] {}", $finish_message));
             result
         }
-    }};
+    };
 }
 
 #[tokio::main]
@@ -34,8 +33,17 @@ async fn main() {
 
     let spotify = get_authorized_session().await.unwrap();
 
+    term.write_line("Specify a limit below 50 for the user playlist fetch.\nIf you don't see the playlist you wish to shuffle after this, abort with ^C and try a lower limit.").unwrap();
+
+    let limit: u32 = Input::<u32>::new()
+        .with_prompt("Choose a limit")
+        .default(5)
+        .report(false)
+        .interact_text()
+        .unwrap_or(5);
+
     let (names, ids) = spinner!(
-        get_playlist_list(&spotify),
+        get_playlist_list(&spotify, Some(limit)),
         "Fetching user playlists...",
         "Fetched user playlists"
     )
@@ -49,10 +57,14 @@ async fn main() {
 
     let user = spotify.current_user().await.unwrap();
 
-    let shuffle_name = format!(
-        "generated shuffle {}",
-        Alphanumeric.sample_string(&mut thread_rng(), 6)
-    );
+    let shuffle_name = Input::new()
+        .with_prompt("New playlist name?")
+        .default(format!(
+            "shuffler: {}",
+            Alphanumeric.sample_string(&mut thread_rng(), 8)
+        ))
+        .interact_text()
+        .unwrap();
 
     let shuffled_playlist = spinner!(
         async {
@@ -62,7 +74,7 @@ async fn main() {
                     &shuffle_name,
                     Some(false),
                     Some(false),
-                    Some("Created with openSHUFFLE https://github.com/ppege/openSHUFFLE"),
+                    Some("Created with shuffler https://github.com/ppege/shuffler"),
                 )
                 .await
                 .unwrap()
@@ -100,12 +112,10 @@ async fn get_authorized_session() -> Result<AuthCodeSpotify> {
     let mut spotify = AuthCodeSpotify::new(creds, oauth);
     spotify.config.token_cached = true;
 
-    // Obtaining the access token
     let url = spotify
         .get_authorize_url(false)
         .context("Failed to get auth URL. Check your internet connection.")?;
 
-    // This function requires the `cli` feature enabled.
     spotify.prompt_for_token(&url).await.context("Failed to login. Make sure you pasted the full URL from your browser, with the URI parameters.")?;
     Ok(spotify)
 }
@@ -123,16 +133,64 @@ fn select_playlist<'a>(names: Vec<String>, ids: Vec<PlaylistId<'a>>) -> (String,
     )
 }
 
-async fn get_playlist_list(spotify: &AuthCodeSpotify) -> (Vec<String>, Vec<PlaylistId<'_>>) {
-    let playlists = spotify.current_user_playlists();
-    pin_mut!(playlists);
+// async fn get_playlist_list(
+//     spotify: &AuthCodeSpotify,
+//     offset: Option<u32>,
+// ) -> (Vec<String>, Vec<PlaylistId<'_>>) {
+//     let limit = Some(50);
+//     let playlists = spotify.current_user_playlists_manual(limit, offset).await;
 
+//     let mut names: Vec<String> = vec![];
+//     let mut ids: Vec<PlaylistId<'_>> = vec![];
+
+//     if let Ok(res) = playlists {
+//         for item in res.items {
+//             names.push(item.name);
+//             ids.push(item.id);
+//         }
+//     } else {
+//         (names, ids) = get_playlist_list(spotify, Some(offset.unwrap_or(0) + limit.unwrap())).await;
+//     }
+
+//     (names, ids)
+// }
+
+async fn get_playlist_list(
+    spotify: &AuthCodeSpotify,
+    limit: Option<u32>,
+) -> (Vec<String>, Vec<PlaylistId<'_>>) {
     let mut names: Vec<String> = vec![];
     let mut ids: Vec<PlaylistId<'_>> = vec![];
+    let mut current_offset = 0;
+    let limit = limit.unwrap_or(5);
 
-    while let Some(item) = playlists.try_next().await.unwrap() {
-        names.push(item.name);
-        ids.push(item.id);
+    loop {
+        let playlists = spotify
+            .current_user_playlists_manual(Some(limit), Some(current_offset))
+            .await;
+
+        match playlists {
+            Ok(res) => {
+                for item in res.items.clone() {
+                    names.push(item.name);
+                    ids.push(item.id);
+                }
+
+                // If the current batch is less than the limit, we're done.
+                if res.items.len() < limit as usize {
+                    break;
+                }
+
+                current_offset += limit; // Increment offset for the next batch
+            }
+            Err(_) => {
+                // eprintln!(
+                //     "Error fetching playlists at offset {}, skipping to next batch",
+                //     current_offset
+                // );
+                current_offset += limit;
+            }
+        }
     }
 
     (names, ids)
