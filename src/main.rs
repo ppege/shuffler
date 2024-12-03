@@ -106,38 +106,72 @@ async fn main() {
         .context("Couldn't write success message to terminal. Program succeeded anyway... process failed successfully?").unwrap();
 }
 
-async fn get_authorized_session(term: &Term) -> Result<AuthCodeSpotify> {
-    let creds = match PreferencesMap::<String>::load(&APP_INFO, "preferences/credentials") {
-        Ok(config) => Credentials::new(&config["id"], &config["secret"]),
-        Err(_) => {
-            let mut config = PreferencesMap::new();
-            term.write_line("You're running shuffler for the first time! In order to use this tool, you have to create a Spotify app, which you can do at https://developer.spotify.com/dashboard. Once you've done this, you have to provide the client ID and secret here.").unwrap();
-            config.insert(
-                "id".into(),
-                Input::<String>::new()
-                    .with_prompt("Enter the client ID")
-                    .interact_text()
-                    .unwrap(),
-            );
-            config.insert(
-                "secret".into(),
-                Input::<String>::new()
-                    .with_prompt("Enter the client secret")
-                    .interact_text()
-                    .unwrap(),
-            );
-            let _ = config.save(&APP_INFO, "preferences/credentials");
-            Credentials::new(&config["id"], &config["secret"])
-        }
-    };
+fn initialize_config(term: &Term) -> (Credentials, String) {
+    let mut config = PreferencesMap::new();
+    term.write_line("You're running shuffler for the first time! In order to use this tool, you have to create a Spotify app, which you can do at https://developer.spotify.com/dashboard. Once you've done this, you have to provide the client ID and secret here.").unwrap();
+    config.insert(
+        "id".into(),
+        Input::<String>::new()
+            .with_prompt("Enter the client ID")
+            .interact_text()
+            .unwrap(),
+    );
+    config.insert(
+        "secret".into(),
+        Input::<String>::new()
+            .with_prompt("Enter the client secret")
+            .interact_text()
+            .unwrap(),
+    );
+    config.insert(
+        "redirect_uri".into(),
+        Input::<String>::new()
+            .with_prompt("Enter the redirect URI (this can be anything, really)")
+            .interact_text()
+            .unwrap(),
+    );
+    let _ = config.save(&APP_INFO, "preferences/credentials");
+    (
+        Credentials::new(&config["id"], &config["secret"]),
+        config["redirect_uri"].clone(),
+    )
+}
 
-    let oauth = OAuth::from_env(scopes!(
-        "playlist-read-private",
-        "playlist-read-collaborative",
-        "playlist-modify-private",
-        "playlist-modify-public"
-    ))
-    .context("Your Spotify application seems to be missing permissions.")?;
+async fn get_authorized_session(term: &Term) -> Result<AuthCodeSpotify> {
+    let (creds, redirect_uri) =
+        match PreferencesMap::<String>::load(&APP_INFO, "preferences/credentials") {
+            Ok(config) => {
+                if let (Some(id), Some(secret), Some(redirect_uri)) = (
+                    config.get("id"),
+                    config.get("secret"),
+                    config.get("redirect_uri"),
+                ) {
+                    (Credentials::new(&id, &secret), redirect_uri.clone())
+                } else {
+                    initialize_config(term)
+                }
+            }
+            Err(_) => initialize_config(term),
+        };
+
+    let oauth = OAuth {
+        redirect_uri,
+        state: OAuth::default().state,
+        scopes: scopes!(
+            "playlist-read-private",
+            "playlist-read-collaborative",
+            "playlist-modify-private",
+            "playlist-modify-public"
+        ),
+        proxies: None,
+    };
+    // let oauth = OAuth::from_env(scopes!(
+    //     "playlist-read-private",
+    //     "playlist-read-collaborative",
+    //     "playlist-modify-private",
+    //     "playlist-modify-public"
+    // ))
+    // .context("Your Spotify application seems to be missing permissions.")?;
     let mut spotify = AuthCodeSpotify::new(creds, oauth);
     spotify.config.token_cached = true;
 
