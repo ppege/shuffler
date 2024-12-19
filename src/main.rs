@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use console::Term;
+use clap::Parser;
 use dialoguer::{FuzzySelect, Input};
 use futures::stream::TryStreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -32,45 +32,44 @@ macro_rules! spinner {
     };
 }
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// ID of the playlist to shuffle
+    #[arg(short, long)]
+    from: Option<String>,
+
+    /// Name of the playlist to generate
+    #[arg(short, long)]
+    to: Option<String>,
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    let term = Term::stdout();
+    let args = Args::parse();
 
-    let spotify = get_authorized_session(&term).await.unwrap();
+    let spotify = get_authorized_session().await.unwrap();
 
-    term.write_line("Specify a limit below 50 for the user playlist fetch.\nIf you don't see the playlist you wish to shuffle after this, abort with ^C and try a lower limit.").unwrap();
+    let (name, id) = get_from_id(args.from.clone(), &spotify).await;
 
-    let limit: u32 = Input::<u32>::new()
-        .with_prompt("Choose a limit")
-        .default(5)
-        .report(false)
-        .interact_text()
-        .unwrap_or(5);
-
-    let (names, ids) = spinner!(
-        get_playlist_list(&spotify, Some(limit)),
-        "Fetching user playlists...",
-        "Fetched user playlists"
-    )
-    .await;
-
-    let (selected_playlist_name, selected_playlist_id) = select_playlist(names, ids);
-
-    let mut track_ids = get_playlist_content(&spotify, selected_playlist_id).await;
+    let mut track_ids = get_playlist_content(&spotify, id).await;
     track_ids.shuffle(&mut thread_rng());
     track_ids.truncate(100); // Spotify API has a limit of 100 tracks when adding songs to a playlist
 
     let user = spotify.current_user().await.unwrap();
 
-    let shuffle_name = Input::new()
-        .with_prompt("New playlist name?")
-        .default(format!(
-            "shuffler::{}",
-            Alphanumeric.sample_string(&mut thread_rng(), 8)
-        ))
-        .interact_text()
-        .unwrap();
+    let shuffle_name = match args.to {
+        Some(name) => name,
+        None => Input::new()
+            .with_prompt("New playlist name?")
+            .default(format!(
+                "shuffler::{}",
+                Alphanumeric.sample_string(&mut thread_rng(), 8)
+            ))
+            .interact_text()
+            .unwrap(),
+    };
 
     let shuffled_playlist = spinner!(
         async {
@@ -80,7 +79,7 @@ async fn main() {
                     &shuffle_name,
                     Some(false),
                     Some(false),
-                    Some(&format!("True shuffle of {}, created with shuffler https://github.com/ppege/shuffler", &selected_playlist_name)),
+                    Some(&format!("True shuffle of {}, created with shuffler https://github.com/ppege/shuffler", &name)),
                 )
                 .await
                 .unwrap()
@@ -102,13 +101,12 @@ async fn main() {
     )
     .await;
 
-    term.write_line(&format!("[\u{2713}] {} shuffled", selected_playlist_name))
-        .context("Couldn't write success message to terminal. Program succeeded anyway... process failed successfully?").unwrap();
+    println!("[\u{2713}] {} shuffled", name);
 }
 
-fn initialize_config(term: &Term) -> (Credentials, String) {
+fn initialize_config() -> (Credentials, String) {
     let mut config = PreferencesMap::new();
-    term.write_line("You're running shuffler for the first time! In order to use this tool, you have to create a Spotify app, which you can do at https://developer.spotify.com/dashboard. Once you've done this, you have to provide the client ID and secret here.").unwrap();
+    println!("You're running shuffler for the first time! In order to use this tool, you have to create a Spotify app, which you can do at https://developer.spotify.com/dashboard. Once you've done this, provide the client ID and secret here.");
     config.insert(
         "id".into(),
         Input::<String>::new()
@@ -137,7 +135,7 @@ fn initialize_config(term: &Term) -> (Credentials, String) {
     )
 }
 
-async fn get_authorized_session(term: &Term) -> Result<AuthCodeSpotify> {
+async fn get_authorized_session() -> Result<AuthCodeSpotify> {
     let (creds, redirect_uri) =
         match PreferencesMap::<String>::load(&APP_INFO, "preferences/credentials") {
             Ok(config) => {
@@ -148,10 +146,10 @@ async fn get_authorized_session(term: &Term) -> Result<AuthCodeSpotify> {
                 ) {
                     (Credentials::new(&id, &secret), redirect_uri.clone())
                 } else {
-                    initialize_config(term)
+                    initialize_config()
                 }
             }
-            Err(_) => initialize_config(term),
+            Err(_) => initialize_config(),
         };
 
     let oauth = OAuth {
@@ -181,6 +179,39 @@ async fn get_authorized_session(term: &Term) -> Result<AuthCodeSpotify> {
 
     spotify.prompt_for_token(&url).await.context("Failed to login. Make sure you pasted the full URL from your browser, with the URI parameters.")?;
     Ok(spotify)
+}
+
+async fn get_from_id(id: Option<String>, spotify: &AuthCodeSpotify) -> (String, PlaylistId) {
+    match id {
+        Some(id) => {
+            let playlist_id = PlaylistId::from_id(id.clone()).expect("Invalid playlist ID.");
+            let playlist_name = spotify
+                .playlist(playlist_id.clone(), None, None)
+                .await
+                .expect("Could not get source playlist info.")
+                .name;
+            (playlist_name, playlist_id)
+        }
+        None => {
+            println!("Specify a limit below 50 for the user playlist fetch.\nIf you don't see the playlist you wish to shuffle after this, abort with ^C and try a lower limit.");
+
+            let limit: u32 = Input::<u32>::new()
+                .with_prompt("Choose a limit")
+                .default(5)
+                .report(false)
+                .interact_text()
+                .unwrap_or(5);
+
+            let (names, ids) = spinner!(
+                get_playlist_list(&spotify, Some(limit)),
+                "Fetching user playlists...",
+                "Fetched user playlists"
+            )
+            .await;
+
+            select_playlist(names, ids)
+        }
+    }
 }
 
 fn select_playlist<'a>(names: Vec<String>, ids: Vec<PlaylistId<'a>>) -> (String, PlaylistId<'a>) {
