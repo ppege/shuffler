@@ -334,7 +334,7 @@ async fn get_playlist_content<'a>(
             Some(bool) => *bool,
             None => Confirm::new()
                 .with_prompt(format!(
-                    "A cached version of this playlist from {} ago was found.",
+                    "A cached version of this playlist from {} ago was found. Use this?",
                     format_duration(age)
                 ))
                 .interact()
