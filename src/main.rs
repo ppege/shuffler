@@ -1,13 +1,17 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use clap::Parser;
-use dialoguer::{FuzzySelect, Input};
+use dialoguer::{Confirm, FuzzySelect, Input};
 use futures::stream::TryStreamExt;
+use humantime::format_duration;
 use indicatif::{ProgressBar, ProgressStyle};
 use preferences::{AppInfo, Preferences, PreferencesMap};
 use rand::distributions::{Alphanumeric, DistString};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use rspotify::model::{EpisodeId, TrackId};
 use rspotify::{model::PlaylistId, prelude::*, scopes, AuthCodeSpotify, Credentials, OAuth};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const APP_INFO: AppInfo = AppInfo {
@@ -42,6 +46,28 @@ struct Args {
     /// Name of the playlist to generate
     #[arg(short, long)]
     to: Option<String>,
+
+    /// Use a cached version of playlist if possible
+    #[arg(short, long)]
+    use_cache: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+enum IdType {
+    Track,
+    Episode,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+struct CachedPlaylist {
+    ids: Vec<DeconstructedId>,
+    time: DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+struct DeconstructedId {
+    id: String,
+    kind: IdType,
 }
 
 #[tokio::main]
@@ -53,7 +79,7 @@ async fn main() {
 
     let (name, id) = get_from_id(args.from.clone(), &spotify).await;
 
-    let mut track_ids = get_playlist_content(&spotify, id).await;
+    let mut track_ids = get_playlist_content(&spotify, id, &args.use_cache).await;
     track_ids.shuffle(&mut thread_rng());
     track_ids.truncate(100); // Spotify API has a limit of 100 tracks when adding songs to a playlist
 
@@ -278,10 +304,6 @@ async fn get_playlist_list(
                 current_offset += limit; // Increment offset for the next batch
             }
             Err(_) => {
-                // eprintln!(
-                //     "Error fetching playlists at offset {}, skipping to next batch",
-                //     current_offset
-                // );
                 current_offset += limit;
             }
         }
@@ -293,12 +315,48 @@ async fn get_playlist_list(
 async fn get_playlist_content<'a>(
     spotify: &AuthCodeSpotify,
     playlist_id: PlaylistId<'_>,
+    use_cache: &Option<bool>,
 ) -> Vec<PlayableId<'a>> {
+    let mut config = match PreferencesMap::<CachedPlaylist>::load(&APP_INFO, "cache/playlists") {
+        Ok(res) => res,
+        Err(_) => PreferencesMap::<CachedPlaylist>::new(),
+    };
+
+    if let Some(cached_playlist) = config.get(&playlist_id.to_string()) {
+        let age = Duration::from_secs(
+            Utc::now()
+                .signed_duration_since(cached_playlist.time)
+                .num_seconds()
+                .try_into()
+                .unwrap(),
+        );
+        if match use_cache {
+            Some(bool) => *bool,
+            None => Confirm::new()
+                .with_prompt(format!(
+                    "A cached version of this playlist from {} ago was found.",
+                    format_duration(age)
+                ))
+                .interact()
+                .unwrap(),
+        } {
+            return cached_playlist
+                .ids
+                .iter()
+                .map(|id| match id.kind {
+                    IdType::Episode => PlayableId::from(EpisodeId::from_id(id.id.clone()).unwrap()),
+                    IdType::Track => PlayableId::from(TrackId::from_id(id.id.clone()).unwrap()),
+                })
+                .collect();
+        }
+    };
+
     let mut playlist = spotify.playlist_items(playlist_id.clone(), None, None);
     let mut track_ids: Vec<PlayableId> = vec![];
+    let mut tracks_serializable: Vec<DeconstructedId> = vec![];
 
     let playlist_length = spotify
-        .playlist(playlist_id, None, None)
+        .playlist(playlist_id.clone(), None, None)
         .await
         .unwrap()
         .tracks
@@ -313,9 +371,29 @@ async fn get_playlist_content<'a>(
         if let Some(track) = item.track {
             if let Some(id) = track.id() {
                 track_ids.push(id.clone_static());
+                tracks_serializable.push(match id.clone_static() {
+                    PlayableId::Track(_) => DeconstructedId {
+                        id: String::from(id.id()),
+                        kind: IdType::Track,
+                    },
+                    PlayableId::Episode(_) => DeconstructedId {
+                        id: String::from(id.id()),
+                        kind: IdType::Episode,
+                    },
+                });
             }
         }
     }
+
+    config.insert(
+        playlist_id.to_string(),
+        CachedPlaylist {
+            ids: tracks_serializable,
+            time: Utc::now(),
+        },
+    );
+
+    let _ = config.save(&APP_INFO, "cache/playlists");
 
     fetch_items_bar.finish_with_message(String::from("[\u{2713}] Fetched playlist items"));
     track_ids
