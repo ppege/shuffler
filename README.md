@@ -1,1 +1,1 @@
-Rust-based true spotify playlist shuffling
+Rust-based true Spotify playlist shuffling
