@@ -55,11 +55,12 @@ async fn main() -> Result<(), std::io::Error> {
     let config = PreferencesMap::<CachedPlaylist>::load(&APP_INFO, "cache/playlists")
         .unwrap_or(PreferencesMap::<CachedPlaylist>::new());
 
-    let mut track_ids = handle_cache(&id.to_string(), args.use_cache, &config).unwrap_or(
-        get_playlist_content(&APP_INFO, &spotify, id)
+    let mut track_ids = match handle_cache(&id.to_string(), args.use_cache, &config) {
+        Some(ids) => ids,
+        None => get_playlist_content(&APP_INFO, &spotify, id)
             .await
             .map_err(std::io::Error::other)?,
-    );
+    };
 
     track_ids.shuffle(&mut thread_rng());
     const TRACK_LIMIT: usize = 100;
