@@ -68,8 +68,9 @@ async fn main() -> Result<(), std::io::Error> {
 
     let user = spotify.current_user().await.unwrap();
 
-    let shuffle_name = args.to.unwrap_or(
-        Input::new()
+    let shuffle_name = match args.to {
+        Some(v) => v,
+        None => Input::new()
             .with_prompt("New playlist name?")
             .default(format!(
                 "shuffler::{}",
@@ -77,7 +78,7 @@ async fn main() -> Result<(), std::io::Error> {
             ))
             .interact_text()
             .unwrap(),
-    );
+    };
 
     let shuffled_playlist = spinner!(
         async {
