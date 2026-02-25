@@ -1,7 +1,8 @@
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use dialoguer::Confirm;
 use humantime::format_duration;
-use preferences::{AppInfo, Preferences, PreferencesError, PreferencesMap};
+use preferences::{AppInfo, Preferences, PreferencesMap};
 use rspotify::model::{EpisodeId, PlayableId, TrackId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -29,8 +30,11 @@ pub fn handle_cache<'a>(
     playlist_id: &str,
     use_cache: Option<bool>,
     config: &'a HashMap<String, CachedPlaylist>,
-) -> Option<Vec<PlayableId<'a>>> {
-    let cached_playlist = config.get(playlist_id)?;
+) -> Result<Option<Vec<PlayableId<'a>>>> {
+    let cached_playlist = match config.get(playlist_id) {
+        Some(playlist) => playlist,
+        None => return Ok(None),
+    };
     let age = Duration::from_secs(
         Utc::now()
             .signed_duration_since(cached_playlist.time)
@@ -42,11 +46,13 @@ pub fn handle_cache<'a>(
                 "A cached version of this playlist from {} ago was found. Use this?",
                 format_duration(age)
             ))
+            .default(false)
+            .show_default(false)
             .interact()
-            .unwrap(),
+            .context("Couldn't confirm whether to use cache")?,
     );
     if use_cache {
-        Some(
+        Ok(Some(
             cached_playlist
                 .ids
                 .iter()
@@ -55,9 +61,9 @@ pub fn handle_cache<'a>(
                     IdType::Track => TrackId::from_id(&id.id).unwrap().into(),
                 })
                 .collect(),
-        )
+        ))
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -65,7 +71,7 @@ pub fn cache_playlist(
     app_info: &AppInfo,
     playlist_id: String,
     ids: Vec<DeconstructedId>,
-) -> Result<(), PreferencesError> {
+) -> Result<()> {
     let mut config = PreferencesMap::<CachedPlaylist>::load(app_info, "cache/playlists")
         .unwrap_or(PreferencesMap::<CachedPlaylist>::new());
 
@@ -77,5 +83,7 @@ pub fn cache_playlist(
         },
     );
 
-    config.save(app_info, "cache/playlists")
+    config
+        .save(app_info, "cache/playlists")
+        .context("Unable to cache playlist; perhaps some permissions are missing?")
 }

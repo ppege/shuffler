@@ -1,7 +1,8 @@
 use crate::cache::{cache_playlist, DeconstructedId, IdType};
+use anyhow::Result;
 use futures_util::TryStreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use preferences::{AppInfo, PreferencesError};
+use preferences::{AppInfo};
 use rspotify::{
     model::{Id, PlayableId, PlaylistId},
     prelude::*,
@@ -49,15 +50,14 @@ pub async fn get_playlist_content<'a>(
     app_info: &AppInfo,
     spotify: &AuthCodeSpotify,
     playlist_id: PlaylistId<'a>,
-) -> Result<Vec<PlayableId<'a>>, PreferencesError> {
+) -> Result<Vec<PlayableId<'a>>> {
     let mut playlist = spotify.playlist_items(playlist_id.clone(), None, None);
     let mut track_ids: Vec<PlayableId> = vec![];
     let mut tracks_serializable: Vec<DeconstructedId> = vec![];
 
     let playlist_length = spotify
         .playlist(playlist_id.clone(), None, None)
-        .await
-        .unwrap()
+        .await?
         .tracks
         .total;
 
